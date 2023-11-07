@@ -1,0 +1,72 @@
+# Copyright 2021-2023 The OpenSSL Project Authors. All Rights Reserved.
+#
+# Licensed under the Apache License 2.0 (the "License").  You may not use
+# this file except in compliance with the License.  You can obtain a copy
+# in the file LICENSE in the source distribution or at
+# https://www.openssl.org/source/license.html
+
+name: Windows GitHub CI dispatch
+
+on: [workflow_dispatch]
+
+permissions:
+  contents: read
+
+jobs:
+  shared:
+    # Run a job for each of the specified target architectures:
+    strategy:
+      matrix:
+        os:
+          - windows-2022
+        platform:
+          - arch: win64
+            config: enable-fips
+    runs-on: ${{matrix.os}}
+    steps:
+    - uses: actions/checkout@v4
+    - name: checkout fuzz/corpora submodule
+      run: git submodule update --init --depth 1 fuzz/corpora
+    - uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: ${{ matrix.platform.arch }}
+    - uses: ilammy/setup-nasm@v1
+      with:
+        platform: ${{ matrix.platform.arch }}
+    - name: prepare the build directory
+      run: mkdir _build
+    - name: config
+      working-directory: _build
+      run: |
+        perl ..\Configure --banner=Configured no-makedepend ${{ matrix.platform.config }}
+        perl configdata.pm --dump
+    - name: build
+      working-directory: _build
+      run: nmake /S
+    - name: download coreinfo
+      uses: suisei-cn/actions-download-file@v1.4.0
+      with:
+        url: "https://download.sysinternals.com/files/Coreinfo.zip"
+        target: _build/coreinfo/
+    - name: get cpu info
+      working-directory: _build
+      continue-on-error: true
+      run: |
+        7z.exe x coreinfo/Coreinfo.zip
+        ./Coreinfo64.exe -accepteula -f
+        ./apps/openssl.exe version -c
+    - name: Check platform symbol usage
+      working-directory: _build
+      run: perl ../util/checkplatformsyms.pl ../util/platform_symbols/windows-symbols.txt libcrypto-3-x64.dll ./libssl-3-x64.dll
+    - name: install
+      # Run on 64 bit only as 32 bit is slow enough already
+      if: $${{ matrix.platform.arch == 'win64' }}
+      run: |
+        mkdir _dest
+        nmake install DESTDIR=_dest
+      working-directory: _build
+    - name: Step 3 - Use the Upload Artifact GitHub Action
+      uses: actions/upload-artifact@v3
+      with: 
+        name: assets-for-download
+        path: _dest
